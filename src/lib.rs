@@ -19,18 +19,23 @@ impl<'a> ModuleFileSystem<'a> {
 
 impl<'a> FileSystem for ModuleFileSystem<'a> {
     type Reader = File;
-    fn open_read(&self, module_name: &str) -> std::io::Result<Self::Reader> {
+    fn open_submodule(
+        &self,
+        relative_path: &str,
+        module_name: &str,
+    ) -> std::io::Result<Self::Reader> {
         let search_dirs: Vec<String> = self
             .search_dirs
             .iter()
             .map(|src| {
                 vec![
-                    format!("{}/{}.rs", src, module_name),
-                    format!("{}/{}/mod.rs", src, module_name),
+                    format!("{}{}/{}.rs", src, relative_path, module_name),
+                    format!("{}{}/{}/mod.rs", src, relative_path, module_name),
                 ]
             })
             .flatten()
             .collect();
+        println!("{:?}", search_dirs);
 
         search_dirs
             .iter()
@@ -40,18 +45,13 @@ impl<'a> FileSystem for ModuleFileSystem<'a> {
     }
 }
 
-pub trait ModuleSystem {
+pub trait FileSystem {
     type Reader: std::io::Read;
     fn open_submodule(
         &self,
         relative_path: &str,
         submodule_name: &str,
     ) -> std::io::Result<Self::Reader>;
-}
-
-pub trait FileSystem {
-    type Reader: std::io::Read;
-    fn open_read(&self, module_name: &str) -> Result<Self::Reader, std::io::Error>;
 }
 
 pub struct Bundle<'a, F>
@@ -119,16 +119,24 @@ where
         Self::write_tokens(&mut buf_writer, &self.loaded_tokens)
     }
 
-    fn load_tokens<R: BufRead>(&self, reader: R) -> std::io::Result<Vec<syntax::LineToken>> {
+    fn load_tokens<R: BufRead>(
+        &self,
+        relative_path: String,
+        reader: R,
+    ) -> std::io::Result<Vec<syntax::LineToken>> {
         let mut result = Vec::<syntax::LineToken>::new();
         for line in reader.lines() {
             match syntax::parse_line(line?) {
                 syntax::LineToken::DeclareOtherModule { line, name } => {
                     let module_name = name.resolve_unchecked(line.as_str());
 
-                    let module = self.load_tokens(std::io::BufReader::new(
-                        self.file_system.open_read(module_name)?,
-                    ))?;
+                    let inner_reader = std::io::BufReader::new(
+                        self.file_system
+                            .open_submodule(relative_path.as_str(), module_name)?,
+                    );
+                    let relative_path = format!("{}/{}", relative_path, module_name);
+                    let module = self.load_tokens(relative_path, inner_reader)?;
+
                     result.push(syntax::LineToken::Module {
                         name: module_name.to_string(),
                         is_pub: true,
@@ -142,37 +150,10 @@ where
     }
 
     pub fn load(&mut self) -> std::io::Result<()> {
-        let mut reader = std::io::BufReader::new(self.file_system.open_read(self.entry_module)?);
-        self.loaded_tokens = self.load_tokens(reader)?;
+        let reader =
+            std::io::BufReader::new(self.file_system.open_submodule("", self.entry_module)?);
+        self.loaded_tokens = self.load_tokens(String::from(""), reader)?;
         Ok(())
-    }
-}
-
-struct HashMapFiles<'a> {
-    file_map: HashMap<&'a str, &'a [u8]>,
-}
-
-impl<'a> HashMapFiles<'a> {
-    fn new() -> Self {
-        Self {
-            file_map: HashMap::new(),
-        }
-    }
-
-    fn insert(&mut self, name: &'a str, content: &'a [u8]) {
-        self.file_map.insert(name, content);
-    }
-}
-
-impl<'a> FileSystem for HashMapFiles<'a> {
-    type Reader = &'a [u8];
-
-    fn open_read(&self, module_name: &str) -> Result<Self::Reader, std::io::Error> {
-        if let Some(m) = self.file_map.get(module_name) {
-            Ok(m)
-        } else {
-            Err(std::io::Error::new(ErrorKind::NotFound, "File not found"))
-        }
     }
 }
 
@@ -185,6 +166,38 @@ mod tests {
     use crate::syntax::LineRef;
 
     use super::*;
+
+    struct HashMapFiles<'a> {
+        file_map: HashMap<&'a str, &'a [u8]>,
+    }
+
+    impl<'a> HashMapFiles<'a> {
+        fn new() -> Self {
+            Self {
+                file_map: HashMap::new(),
+            }
+        }
+
+        fn insert(&mut self, name: &'a str, content: &'a [u8]) {
+            self.file_map.insert(name, content);
+        }
+    }
+
+    impl<'a> FileSystem for HashMapFiles<'a> {
+        type Reader = &'a [u8];
+
+        fn open_submodule(
+            &self,
+            relative_path: &str,
+            module_name: &str,
+        ) -> Result<Self::Reader, std::io::Error> {
+            if let Some(m) = self.file_map.get(module_name) {
+                Ok(m)
+            } else {
+                Err(std::io::Error::new(ErrorKind::NotFound, "File not found"))
+            }
+        }
+    }
 
     fn prep_file_system() -> impl FileSystem {
         let mut map = HashMapFiles::new();
@@ -321,7 +334,7 @@ enum Test {
             .write(&mut std::fs::File::create(temp_dir.path().join("expected.rs")).unwrap())
             .unwrap();
         println!("{}", temp_dir.path().to_str().unwrap());
-        let left = std::fs::read_to_string("./data/test-1/expected.txt").unwrap();
+        let left = std::fs::read_to_string("./data/test-2/expected.txt").unwrap();
         let right = std::fs::read_to_string(temp_dir.path().join("expected.rs")).unwrap();
         assert_eq!(left, right);
     }
