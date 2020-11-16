@@ -1,6 +1,5 @@
 use lazy_static::lazy_static;
 use regex::Regex;
-use std::io::BufRead;
 
 lazy_static! {
     static ref PUB_MOD_REGEX: Regex = Regex::new(r"^\s*pub mod (.+);").unwrap();
@@ -27,11 +26,11 @@ pub enum LineToken {
     Module {
         name: String,
         is_pub: bool,
-        tokens: Vec<LineToken>
+        tokens: Vec<LineToken>,
     },
-    OtherLine{
+    OtherLine {
         line: String,
-        trimmed_ref: LineRef
+        trimmed_ref: LineRef,
     },
 }
 
@@ -56,16 +55,6 @@ impl LineRef {
     pub fn resolve_unchecked<'a>(&self, line: &'a str) -> &'a str {
         &line[self.start..self.start + self.size]
     }
-}
-
-fn parse_raw<'a, R>(read: &mut dyn std::io::Read) -> Result<Vec<LineToken>, std::io::Error> {
-    let buffer = std::io::BufReader::new(read);
-    let mut result: Vec<LineToken> = Vec::new();
-    for (line_no, line) in buffer.lines().enumerate() {
-        let token = parse_line( line?);
-        result.push(token);
-    }
-    Ok(result)
 }
 
 struct LineRefTokenizer<'a> {
@@ -158,8 +147,8 @@ pub fn parse_line<'a>(line: String) -> LineToken {
         let line_ref = LineRef::from_match(c.name("line").unwrap());
         return LineToken::OtherLine {
             line: line,
-            trimmed_ref: line_ref
-        }
+            trimmed_ref: line_ref,
+        };
     }
     LineToken::OtherLine {
         trimmed_ref: LineRef::new(0, line.len()),
@@ -207,7 +196,7 @@ mod tests {
     #[test]
     fn parse_line_pub_mod() {
         let line = "pub mod game;".to_string();
-        let token = parse_line( line);
+        let token = parse_line(line);
         let expected = LineToken::DeclareOtherModule {
             line: "pub mod game;".to_string(),
             name: LineRef::new(8, 4),
@@ -218,7 +207,7 @@ mod tests {
     #[test]
     fn parse_line_use_mod() {
         let line = "use std::io::Buf;".to_string();
-        let token = parse_line( line.clone());
+        let token = parse_line(line.clone());
         let expected = LineToken::UseModule {
             line: line,
             name: LineRef::new(4, 12),
@@ -229,7 +218,7 @@ mod tests {
     #[test]
     fn parse_line_use_multy_mod() {
         let line = "use std::{collections::HashSet, io::BufWriter};".to_string();
-        let token = parse_line( line.clone());
+        let token = parse_line(line.clone());
         let expected = LineToken::UseManyModules {
             line: line,
             names: vec![LineRef::new(10, 20), LineRef::new(32, 13)],
@@ -241,8 +230,11 @@ mod tests {
     #[test]
     fn parse_line_other_line() {
         let line = "   class Turn  ".to_string();
-        let token = parse_line( line.clone());
-        let expected = LineToken::OtherLine{line: line.clone(), trimmed_ref: LineRef::new(3, line.trim().len())}; 
+        let token = parse_line(line.clone());
+        let expected = LineToken::OtherLine {
+            line: line.clone(),
+            trimmed_ref: LineRef::new(3, line.trim().len()),
+        };
         assert_eq!(token, expected);
     }
 }

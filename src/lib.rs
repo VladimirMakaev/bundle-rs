@@ -1,8 +1,9 @@
-use lazy_static::lazy_static;
-use std::writeln;
 use std::{
-    collections::hash_set::HashSet, collections::HashMap, fs::File, io::BufRead, io::ErrorKind,
-    io::Write, path::Path,
+    fs::File,
+    io::Write,
+    io::{BufRead, ErrorKind},
+    path::Path,
+    writeln,
 };
 
 pub mod syntax;
@@ -167,11 +168,11 @@ mod tests {
 
     use super::*;
 
-    struct HashMapFiles<'a> {
+    struct StubFileSystem<'a> {
         file_map: HashMap<&'a str, &'a [u8]>,
     }
 
-    impl<'a> HashMapFiles<'a> {
+    impl<'a> StubFileSystem<'a> {
         fn new() -> Self {
             Self {
                 file_map: HashMap::new(),
@@ -183,12 +184,12 @@ mod tests {
         }
     }
 
-    impl<'a> FileSystem for HashMapFiles<'a> {
+    impl<'a> FileSystem for StubFileSystem<'a> {
         type Reader = &'a [u8];
 
         fn open_submodule(
             &self,
-            relative_path: &str,
+            _relative_path: &str,
             module_name: &str,
         ) -> Result<Self::Reader, std::io::Error> {
             if let Some(m) = self.file_map.get(module_name) {
@@ -200,7 +201,7 @@ mod tests {
     }
 
     fn prep_file_system() -> impl FileSystem {
-        let mut map = HashMapFiles::new();
+        let mut map = StubFileSystem::new();
         map.insert(
             "main",
             r"use std::io;
