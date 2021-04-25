@@ -2,7 +2,7 @@ use lazy_static::lazy_static;
 use regex::Regex;
 
 lazy_static! {
-    static ref PUB_MOD_REGEX: Regex = Regex::new(r"^\s*pub mod (.+);").unwrap();
+    static ref PUB_MOD_REGEX: Regex = Regex::new(r"^\s*(pub)?\s*mod (.+);").unwrap();
     static ref USE_SINGLE_REGEX: Regex = Regex::new(r"^\s*use\s*((\w+::)*([\w]+));").unwrap();
     static ref USE_MULTI_REGEX: Regex = Regex::new(r"^\s*use\s*(((\w+)::)+\{(.+)\};)").unwrap();
     static ref OTHER_LINE_REGEX: Regex = Regex::new(r"^\s*(?P<line>.+?)\s*$").unwrap();
@@ -13,6 +13,7 @@ pub enum LineToken {
     DeclareOtherModule {
         line: String,
         name: LineRef,
+        is_pub: bool,
     },
     UseModule {
         line: String,
@@ -113,10 +114,12 @@ impl<'a> Iterator for LineRefTokenizer<'a> {
 
 pub fn parse_line<'a>(line: String) -> LineToken {
     if let Some(c) = PUB_MOD_REGEX.captures(&line) {
-        let line_ref = LineRef::from_match(c.get(1).unwrap());
+        let is_pub = c.get(1).is_some();
+        let line_ref = LineRef::from_match(c.get(2).unwrap());
         return LineToken::DeclareOtherModule {
             line: line,
             name: line_ref,
+            is_pub: is_pub,
         };
     }
 
@@ -200,6 +203,19 @@ mod tests {
         let expected = LineToken::DeclareOtherModule {
             line: "pub mod game;".to_string(),
             name: LineRef::new(8, 4),
+            is_pub: true,
+        };
+        assert_eq!(token, expected);
+    }
+
+    #[test]
+    fn parse_line_nonpub_mod() {
+        let line = "mod test_this;".to_string();
+        let token = parse_line(line.clone());
+        let expected = LineToken::DeclareOtherModule {
+            line: line,
+            name: LineRef::new(4, 9),
+            is_pub: false,
         };
         assert_eq!(token, expected);
     }

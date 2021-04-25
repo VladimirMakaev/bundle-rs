@@ -90,7 +90,11 @@ where
                     parent: _,
                     names: _,
                 }
-                | syntax::LineToken::DeclareOtherModule { line, name: _ }
+                | syntax::LineToken::DeclareOtherModule {
+                    line,
+                    name: _,
+                    is_pub: _,
+                }
                 | syntax::LineToken::OtherLine {
                     line,
                     trimmed_ref: _,
@@ -128,7 +132,11 @@ where
         let mut result = Vec::<syntax::LineToken>::new();
         for line in reader.lines() {
             match syntax::parse_line(line?) {
-                syntax::LineToken::DeclareOtherModule { line, name } => {
+                syntax::LineToken::DeclareOtherModule {
+                    line,
+                    name,
+                    is_pub: _,
+                } => {
                     let module_name = name.resolve_unchecked(line.as_str());
 
                     let inner_reader = std::io::BufReader::new(
