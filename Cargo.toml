@@ -7,8 +7,10 @@ version = "0.1.0"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-regex = "1.4"
-lazy_static="1.4"
+proc-macro2 = "^1.0.0"
+quote = "^1.0.0"
+syn = {version = "^1.0.0", features = ["full"]}
+syn-inline-mod = "^0.4.0"
 
 [dev-dependencies]
 tempdir = "0.3"

@@ -1,178 +1,100 @@
-use std::{
-    fs::File,
-    io::Write,
-    io::{BufRead, ErrorKind},
-    path::Path,
-    writeln,
+use std::{path::Path, process::Command};
+
+use quote::ToTokens;
+use syn::{
+    visit_mut::{visit_file_mut, visit_item_mod_mut, VisitMut},
+    Attribute, File, Ident, Item, ItemMod,
 };
+use syn_inline_mod::parse_and_inline_modules;
 
-pub mod syntax;
+pub struct Visitor;
 
-pub struct ModuleFileSystem<'a> {
-    search_dirs: Vec<&'a str>,
-}
+impl VisitMut for Visitor {
+    fn visit_file_mut(&mut self, file: &mut File) {
+        file.items.retain(|item| Self::retain_item(item));
+        visit_file_mut(self, file);
+    }
 
-impl<'a> ModuleFileSystem<'a> {
-    pub fn new(paths: Vec<&'a str>) -> Self {
-        Self { search_dirs: paths }
+    fn visit_item_mod_mut(&mut self, i: &mut ItemMod) {
+        if let Some((_, items)) = &mut i.content {
+            items.retain(|i| Self::retain_item(i))
+        }
+        visit_item_mod_mut(self, i);
     }
 }
 
-impl<'a> FileSystem for ModuleFileSystem<'a> {
-    type Reader = File;
-    fn open_submodule(
-        &self,
-        relative_path: &str,
-        module_name: &str,
-    ) -> std::io::Result<Self::Reader> {
-        let search_dirs: Vec<String> = self
-            .search_dirs
-            .iter()
-            .map(|src| {
-                vec![
-                    format!("{}{}/{}.rs", src, relative_path, module_name),
-                    format!("{}{}/{}/mod.rs", src, relative_path, module_name),
-                ]
-            })
-            .flatten()
-            .collect();
-        println!("{:?}", search_dirs);
+impl Visitor {
+    fn has_test_attr(attrs: &Vec<Attribute>) -> bool {
+        if attrs.len() > 0 {
+            let cfg = attrs[0].path.get_ident();
+            let attribute = attrs[0].parse_args::<Ident>();
+            return match (cfg, attribute) {
+                (Some(x), Ok(y)) if x.to_string() == "cfg" && y.to_string() == "test" => true,
+                _ => false,
+            };
+        }
+        return false;
+    }
 
-        search_dirs
-            .iter()
-            .find(|path| std::fs::metadata(path).is_ok())
-            .map(|x| std::fs::File::open(Path::new(&x)).unwrap())
-            .ok_or(std::io::Error::new(ErrorKind::NotFound, "not found"))
+    fn retain_item(item: &Item) -> bool {
+        match item {
+            syn::Item::Mod(x) if x.attrs.len() > 0 => !Self::has_test_attr(&x.attrs),
+            _ => true,
+        }
     }
 }
 
-pub trait FileSystem {
-    type Reader: std::io::Read;
-    fn open_submodule(
-        &self,
-        relative_path: &str,
-        submodule_name: &str,
-    ) -> std::io::Result<Self::Reader>;
+pub struct Bundle<P>
+where
+    P: AsRef<Path>,
+{
+    entry_module: P,
+    output: P,
+    strip_tests: bool,
+    format_output: bool,
 }
 
-pub struct Bundle<'a, F>
+impl<P> Bundle<P>
 where
-    F: FileSystem,
+    P: AsRef<Path>,
 {
-    entry_module: &'a str,
-    loaded_tokens: Vec<syntax::LineToken>,
-    file_system: F,
-}
-
-impl<'a, F: FileSystem> Bundle<'a, F>
-where
-    F: FileSystem,
-{
-    pub fn new(entry_module: &'a str, file_system: F) -> Self {
+    pub fn new(entry_module: P, output: P) -> Self {
         Self {
-            entry_module: entry_module,
-            loaded_tokens: Vec::new(),
-            file_system,
+            entry_module,
+            output,
+            strip_tests: false,
+            format_output: true,
         }
     }
 
-    pub fn refactor(&mut self) {}
+    pub fn stript_tests(mut self, value: bool) -> Self {
+        self.strip_tests = value;
+        self
+    }
 
-    fn write_tokens<W: std::io::Write>(
-        writer: &mut std::io::BufWriter<W>,
-        tokens: &Vec<syntax::LineToken>,
-    ) -> std::io::Result<()> {
-        for token in tokens.iter() {
-            match token {
-                syntax::LineToken::UseModule { line, name: _ }
-                | syntax::LineToken::UseManyModules {
-                    line,
-                    parent: _,
-                    names: _,
-                }
-                | syntax::LineToken::DeclareOtherModule {
-                    line,
-                    name: _,
-                    is_pub: _,
-                }
-                | syntax::LineToken::OtherLine {
-                    line,
-                    trimmed_ref: _,
-                } => {
-                    writer.write(line.as_bytes())?;
-                    writer.write("\n".as_bytes())?;
-                }
-                syntax::LineToken::Module {
-                    name,
-                    is_pub,
-                    tokens,
-                } => {
-                    if is_pub == &true {
-                        writer.write("pub ".as_bytes())?;
-                    }
-                    writeln!(writer, "mod {}{{", name)?;
-                    Self::write_tokens(writer, tokens)?;
-                    writer.write("}\n".as_bytes())?;
-                }
-            }
+    pub fn build_output(self) -> std::io::Result<()> {
+        let mut file = parse_and_inline_modules(self.entry_module.as_ref());
+        if self.strip_tests {
+            let mut v = Visitor {};
+            v.visit_file_mut(&mut file);
         }
-        Ok(())
-    }
 
-    pub fn write<W: std::io::Write>(&self, write: &mut W) -> std::io::Result<()> {
-        let mut buf_writer = std::io::BufWriter::new(write);
-        Self::write_tokens(&mut buf_writer, &self.loaded_tokens)
-    }
+        std::fs::write(self.output.as_ref(), file.into_token_stream().to_string())?;
 
-    fn load_tokens<R: BufRead>(
-        &self,
-        relative_path: String,
-        reader: R,
-    ) -> std::io::Result<Vec<syntax::LineToken>> {
-        let mut result = Vec::<syntax::LineToken>::new();
-        for line in reader.lines() {
-            match syntax::parse_line(line?) {
-                syntax::LineToken::DeclareOtherModule {
-                    line,
-                    name,
-                    is_pub: _,
-                } => {
-                    let module_name = name.resolve_unchecked(line.as_str());
-
-                    let inner_reader = std::io::BufReader::new(
-                        self.file_system
-                            .open_submodule(relative_path.as_str(), module_name)?,
-                    );
-                    let relative_path = format!("{}/{}", relative_path, module_name);
-                    let module = self.load_tokens(relative_path, inner_reader)?;
-
-                    result.push(syntax::LineToken::Module {
-                        name: module_name.to_string(),
-                        is_pub: true,
-                        tokens: module,
-                    })
-                }
-                t => result.push(t),
-            }
+        if self.format_output {
+            Command::new("rustfmt")
+                .arg(self.output.as_ref())
+                .spawn()?
+                .wait()?;
         }
-        Ok(result)
-    }
 
-    pub fn load(&mut self) -> std::io::Result<()> {
-        let reader =
-            std::io::BufReader::new(self.file_system.open_submodule("", self.entry_module)?);
-        self.loaded_tokens = self.load_tokens(String::from(""), reader)?;
         Ok(())
     }
 }
 
-#[cfg(test)]
+#[cfg(test_not_now)]
 mod tests {
     use std::collections::HashMap;
-
-    use syntax::LineToken;
-
-    use crate::syntax::LineRef;
 
     use super::*;
 
@@ -275,7 +197,7 @@ use std::io;"
                 line_from("    One,", 4, 0),
                 line_from("}", 0, 0)
             ],
-            bundle.loaded_tokens
+            bundle.file
         );
     }
 
